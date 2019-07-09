@@ -1,12 +1,11 @@
 package tk.rdvdev2.experiments.command;
 
 import com.mojang.brigadier.CommandDispatcher;
-import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
-import net.minecraft.block.Blocks;
-import net.minecraft.block.BushBlock;
+import net.minecraft.block.*;
 import net.minecraft.command.CommandSource;
 import net.minecraft.command.Commands;
+import net.minecraft.state.properties.RailShape;
+import net.minecraft.util.Direction;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import tk.rdvdev2.experiments.common.item.MarkerItem;
@@ -51,7 +50,7 @@ public class RailwayCommand {
                 break;
             }
 
-            for(BlockPos next: getBlockNeighbours(current, world)) {
+            for(BlockPos next: getBlockNeighbours(current, cameFrom.get(current), world)) {
                 int newCost = costSoFar.get(current) + calculateCost(current, next, world);
                 if (!costSoFar.containsKey(next) || newCost < costSoFar.get(next)) {
                     costSoFar.put(next, newCost);
@@ -74,6 +73,33 @@ public class RailwayCommand {
         for (BlockPos currentPos : path) {
             placeRail(world, currentPos);
         }
+        
+        powerUp(path, world);
+    }
+
+    private static void powerUp(LinkedList<BlockPos> path, World world) {
+        powerUp(path, world, 0, 8);
+    }
+
+    private static void powerUp(LinkedList<BlockPos> path, World world, int index, int unpoweredCount) {
+        BlockPos pos = path.get(index);
+        RailShape shape = ((RailBlock)Blocks.RAIL).getRailDirection(world.getBlockState(pos), world, pos, null);
+        if (index == path.size() - 1) {
+            placePoweredRail(world, pos);
+            return;
+        } else if (unpoweredCount >= 8) {
+            if (shape.getMeta() < 6) {
+                placePoweredRail(world, pos);
+                unpoweredCount = 0;
+            }
+        } else if (shape.isAscending()) {
+            placePoweredRail(world, pos);
+            unpoweredCount = 0;
+        } else {
+            unpoweredCount++;
+        }
+        index++;
+        powerUp(path, world, index, unpoweredCount);
     }
 
     private static void placeRail(World world, BlockPos pos) {
@@ -81,6 +107,14 @@ public class RailwayCommand {
         BlockState newState = Blocks.RAIL.getDefaultState();
         world.setBlockState(pos, newState);
         Blocks.RAIL.onBlockAdded(newState, world, pos, oldState, true);
+    }
+
+    private static void placePoweredRail(World world, BlockPos pos) {
+        BlockState oldState = world.getBlockState(pos);
+        BlockState newState = Blocks.POWERED_RAIL.getDefaultState();
+        world.setBlockState(pos, newState);
+        world.setBlockState(pos.down().down(), Blocks.REDSTONE_TORCH.getDefaultState());
+        Blocks.POWERED_RAIL.onBlockAdded(newState, world, pos, oldState, true);
     }
 
     private static int heuristic(BlockPos a, BlockPos b) {
@@ -91,13 +125,55 @@ public class RailwayCommand {
         return 1;
     }
 
-    private static Iterable<? extends BlockPos> getBlockNeighbours(BlockPos pos, World world) {
+    private static Iterable<? extends BlockPos> getBlockNeighbours(BlockPos pos, BlockPos previous, World world) {
+        // Setup vars
+        HashSet<BlockPos> toCheck = new HashSet<>();
         HashSet<BlockPos> ret = new HashSet<>();
-        for(BlockPos testedPos: new BlockPos[]{pos.north(), pos.east(), pos.south(), pos.west(), pos.north().up(), pos.east().up(), pos.south().up(), pos.west().up(), pos.north().down(), pos.east().down(), pos.south().down(), pos.west().down()}) {
+        Direction originFacing;
+        Direction originHeight;
+        BlockPos difference;
+
+        // Determine origin
+        if (previous == null) { // If it's start pos
+            originHeight = Direction.DOWN; // Allow turning
+            difference = pos.subtract(pos.down()); // Little trick, this way all directions will be valid
+        } else if (pos.getY() == previous.getY()) { // Same Y
+            originHeight = Direction.DOWN; // Also works with same Y
+            difference = previous.subtract(pos);
+        } else if (pos.up().getY() == previous.getY()) { // Rail is going down
+            originHeight = Direction.UP;
+            difference = previous.subtract(pos.up());
+        } else if (pos.down().getY() == previous.getY()) { // Rail was going up
+            originHeight = Direction.DOWN;
+            difference = previous.subtract(pos.down());
+        } else throw new RuntimeException();
+        originFacing = Direction.getFacingFromVector(difference.getX(), difference.getY(), difference.getZ());
+
+        // Get possible neighbours depending on previous rail
+        for(Direction direction: new Direction[]{Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST}) {
+            if (direction == originFacing) continue;
+            switch (originHeight) {
+                case UP:
+                    if (direction.getOpposite() == originFacing){
+                        toCheck.add(pos.offset(direction));
+                        toCheck.add(pos.offset(direction).down());
+                    }
+                    break;
+                case DOWN:
+                    toCheck.add(pos.offset(direction));
+                    toCheck.add(pos.offset(direction).down());
+                    if (direction.getOpposite() == originFacing) toCheck.add(pos.offset(direction).up());
+                    break;
+            }
+        }
+
+        // Check the possible neighbours to see if the rail can be placed
+        for(BlockPos testedPos: toCheck) {
             if ((world.getBlockState(testedPos).isAir() || world.getBlockState(testedPos).getBlock() instanceof BushBlock) && Block.func_220064_c(world, testedPos.down())) {
                 ret.add(testedPos);
             }
         }
+
         return ret;
     }
 
